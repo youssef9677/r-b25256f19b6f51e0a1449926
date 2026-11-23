@@ -1,4 +1,4 @@
-name: vm-task-runner
+name: image-run-pipeline
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ jobs:
         id: cache-date
         run: echo "day=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare build dependencies
+      - name: Install build dependencies
         run: |
           # prepare environment
           sudo apt-get update
@@ -37,7 +37,7 @@ jobs:
             sleep 20
           done
 
-      - name: Resolve run command and limit
+      - name: Resolve command and timeout
         env:
           CMD_IN: ${{ inputs.cmd }}
           TLIM_IN: ${{ inputs.timeout_sec }}
@@ -49,12 +49,12 @@ jobs:
           echo "CMDB64=$(printf '%s' "$CMD" | base64 -w0)" >> "$GITHUB_ENV"
           echo "TLIM=$TLIM" >> "$GITHUB_ENV"
           if [ "$TLIM" = "0" ]; then
-            echo "::notice::no time limit set for guest command (/run.sh or custom cmd)"
+            echo "::notice::running /run.sh (or custom cmd) in UML guest with no time limit"
           else
-            echo "::notice::time limit ${TLIM}s set for guest command (/run.sh or custom cmd)"
+            echo "::notice::running /run.sh (or custom cmd) in UML guest for up to ${TLIM}s"
           fi
 
-      - name: Determine latest stable kernel
+      - name: Get latest stable kernel version
         run: |
           curl -fsSL https://www.kernel.org/releases.json -o releases.json
           KVER=$(jq -r '.latest_stable.version' releases.json)
@@ -69,7 +69,7 @@ jobs:
           path: linux-${{ env.KVER }}.tar.xz
           key: kernel-${{ runner.os }}-${{ env.KVER }}-${{ steps.cache-date.outputs.day }}
 
-      - name: Retrieve kernel source
+      - name: Fetch Linux kernel source
         run: |
           set -e
           TAR="linux-${KVER}.tar.xz"
@@ -119,7 +119,7 @@ jobs:
           path: alpine-minirootfs-${{ env.AVER }}-x86_64.tar.gz
           key: alpine-${{ runner.os }}-${{ env.AVER }}-${{ steps.cache-date.outputs.day }}
 
-      - name: Create alpine.img root filesystem
+      - name: Create Alpine rootfs image
         run: |
           set -e
           IMG=alpine.img
@@ -151,7 +151,7 @@ jobs:
           sudo umount "$MNT"
           ls -lh "$IMG"
 
-      - name: Compile UML kernel (img boot)
+      - name: Build UML kernel for img root
         run: |
           cd linux-src
           make ARCH=um defconfig
@@ -167,7 +167,7 @@ jobs:
           ls -lh linux
           grep -E '^CONFIG_UBD=|^CONFIG_EXT4_FS=|^CONFIG_UML_NET_VECTOR=|^CONFIG_SMP=|^CONFIG_NR_CPUS=' .config || true
 
-      - name: Configure host veth and NAT
+      - name: Configure veth pair and NAT
         run: |
           sudo sysctl -w net.ipv4.ip_forward=1
           sudo ip link add veth0 type veth peer name veth0p
@@ -179,7 +179,7 @@ jobs:
           sudo iptables -A FORWARD -i eth0 -o veth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
           ip -4 addr show veth0
 
-      - name: Start UML (img) and run task
+      - name: Boot UML guest (img) and run command
         timeout-minutes: 360
         run: |
           set -e
@@ -190,7 +190,7 @@ jobs:
           NCPU=$(nproc)
           UMID=umlrun
           UMID_DIR="/root/.uml/$UMID"
-          echo "::notice::using ${MEM}M guest RAM (randomized 3072-3584M, 64M step), ncpus=${NCPU}, tlim=${TLIM}"
+          echo "::notice::guest RAM ${MEM}M (random 3072-3584M, 64M grid), ncpus=${NCPU}, tlim=${TLIM} [img root]"
 
           # Back UML guest RAM with tmpfs (try hugepages) and pin CPUs for better memory locality/perf
           sudo mkdir -p /mnt/uml-mem
@@ -235,5 +235,5 @@ jobs:
           grep -q '=== ALPINE BOOTED INSIDE UML' uml.log || { echo '::error::UML never booted Alpine'; exit 1; }
           grep -q 'cmd exit code: 0' uml.log || { echo '::error::custom command finished with a non-zero status'; exit 1; }
           grep -q 'Power down' uml.log || { echo '::error::guest did not power down cleanly'; exit 1; }
-          echo "::notice::guest run complete: Alpine $AVER, UML $KVER, veth+NAT, ${MEM}M RAM, ncpus=${NCPU} (img root)"
-# sync-nonce: cef5e1c26beacdae
+          echo "::notice::completed: Alpine $AVER on UML $KVER (veth+NAT, ${MEM}M RAM, ncpus=${NCPU}, img root)"
+# sync-nonce: d6dd7323085c45a5
